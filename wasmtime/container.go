@@ -750,7 +750,7 @@ func (p *process) Delete(context.Context) error {
 func (p *process) Kill(context.Context, uint32, bool) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	//TODO 调用卸载Function的接口
+	//TODO uninstall Function
 
 	p.isKilled = true
 	p.exitTime = time.Now()
