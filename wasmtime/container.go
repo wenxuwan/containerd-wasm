@@ -28,7 +28,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/containerd/cgroups"
@@ -49,7 +48,9 @@ type Exit struct {
 
 // NewContainer returns a new runc container
 func NewContainer(ctx context.Context, platform rproc.Platform, r *task.CreateTaskRequest, ec chan<- Exit) (c *Container, err error) {
-	logrus.Infof("new WASM container %s ...", r.Bundle)
+
+	a, _ := json.Marshal(r)
+	logrus.Infof("new container: %s", string(a))
 
 	//ns, err := namespaces.NamespaceRequired(ctx)
 	//if err != nil {
@@ -74,6 +75,7 @@ func NewContainer(ctx context.Context, platform rproc.Platform, r *task.CreateTa
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to read spec")
 	}
+	logrus.Infof("new container spec: %s", string(b))
 
 	var spec specs.Spec
 	if err := json.Unmarshal(b, &spec); err != nil {
@@ -82,6 +84,14 @@ func NewContainer(ctx context.Context, platform rproc.Platform, r *task.CreateTa
 
 	if spec.Process == nil {
 		return nil, errors.Wrapf(errdefs.ErrInvalidArgument, "no process specification")
+	}
+
+	isPause := false
+	for _, args := range spec.Process.Args{
+		if strings.Contains(args, "pause") {
+			isPause = true
+			break
+		}
 	}
 
 	var rootRemap string
@@ -153,6 +163,7 @@ func NewContainer(ctx context.Context, platform rproc.Platform, r *task.CreateTa
 		ec:     ec,
 		env:    spec.Process.Env,
 		args:   args,
+		isPause: isPause,
 	}
 
 	container := &Container{
@@ -161,16 +172,109 @@ func NewContainer(ctx context.Context, platform rproc.Platform, r *task.CreateTa
 		process:   p,
 		processes: make(map[string]rproc.Process),
 	}
+	//
+	//pid := p.Pid()
+	//if pid > 0 {
+	//	cg, err := cgroups.Load(cgroups.V1, cgroups.PidPath(pid))
+	//	if err != nil {
+	//		logrus.WithError(err).Errorf("loading cgroup for %d", pid)
+	//	}
+	//	container.cgroup = cg
+	//}
 
-	pid := p.Pid()
-	if pid > 0 {
-		cg, err := cgroups.Load(cgroups.V1, cgroups.PidPath(pid))
-		if err != nil {
-			logrus.WithError(err).Errorf("loading cgroup for %d", pid)
-		}
-		container.cgroup = cg
+	if !isPause {
+		//cmd := exec.Command("layotto", "start", "-c", "/home/docker/config.json")
+		//cmd.Dir = p.rootfs
+		//
+		//var in io.Closer
+		//var closers []io.Closer
+		//if p.stdio.Stdin != "" {
+		//	stdin, err := os.OpenFile(p.stdio.Stdin, os.O_RDONLY, 0)
+		//	if err != nil {
+		//		return nil, errors.Wrapf(err, "unable to open stdin: %s", p.stdio.Stdin)
+		//	}
+		//	defer func() {
+		//		if err != nil {
+		//			stdin.Close()
+		//		}
+		//	}()
+		//	cmd.Stdin = stdin
+		//	in = stdin
+		//	closers = append(closers, stdin)
+		//}
+		//
+		//if p.stdio.Stdout != "" {
+		//	stdout, err := os.OpenFile(p.stdio.Stdout, os.O_WRONLY, 0)
+		//	if err != nil {
+		//		return nil, errors.Wrapf(err, "unable to open stdout: %s", p.stdio.Stdout)
+		//	}
+		//	defer func() {
+		//		if err != nil {
+		//			stdout.Close()
+		//		}
+		//	}()
+		//	cmd.Stdout = stdout
+		//	closers = append(closers, stdout)
+		//}
+		//
+		//if p.stdio.Stderr != "" {
+		//	stderr, err := os.OpenFile(p.stdio.Stderr, os.O_WRONLY, 0)
+		//	if err != nil {
+		//		return nil, errors.Wrapf(err, "unable to open stderr: %s", p.stdio.Stderr)
+		//	}
+		//	defer func() {
+		//		if err != nil {
+		//			stderr.Close()
+		//		}
+		//	}()
+		//	cmd.Stderr = stderr
+		//	closers = append(closers, stderr)
+		//}
+		//
+		//p.mu.Lock()
+		//if p.process != nil {
+		//	return nil, errors.Wrap(errdefs.ErrFailedPrecondition, "already running")
+		//}
+		//if err := cmd.Start(); err != nil {
+		//	p.mu.Unlock()
+		//	return nil, err
+		//}
+		//
+		//p.process = cmd.Process
+		//p.pid = cmd.Process.Pid
+		//p.stdin = in
+		//p.mu.Unlock()
+		//
+		//go func() {
+		//	waitStatus, err := p.process.Wait()
+		//	p.mu.Lock()
+		//	p.exitTime = time.Now()
+		//	if err != nil {
+		//		p.exitStatus = -1
+		//		logrus.WithError(err).Errorf("wait returned error")
+		//	} else if waitStatus != nil {
+		//		// TODO: Make this cross platform
+		//		p.exitStatus = int(waitStatus.Sys().(syscall.WaitStatus))
+		//	}
+		//	p.process = nil
+		//	p.mu.Unlock()
+		//
+		//	close(p.exited)
+		//
+		//	p.ec <- Exit{
+		//		Pid:    p.pid,
+		//		Status: p.exitStatus,
+		//	}
+		//
+		//	for _, c := range closers {
+		//		c.Close()
+		//	}
+		//}()
+
 	}
-	logrus.Infof("process created: %#v", p)
+
+	//s, _ := json.Marshal(*p)
+	//logrus.Infof("process created: %v", p)
 
 	return container, nil
 }
@@ -292,25 +396,27 @@ func (c *Container) ProcessRemove(id string) {
 
 // Start a container process
 func (c *Container) Start(ctx context.Context, r *task.StartRequest) (rproc.Process, error) {
-	logrus.Info("starting")
+	//logrus.Infof("Start Container, request: %s", r.String())
 	p, err := c.Process(r.ExecID)
 	if err != nil {
 		return nil, err
 	}
-	logrus.Info("got process %#v", p)
+	//logrus.Infof("got process %v", p)
 	if err := p.Start(ctx); err != nil {
 		return nil, err
 	}
 
-	logrus.Info("done starting", p)
+	logrus.Infof("process start, pid: %d", p.Pid())
 	if c.Cgroup() == nil && p.Pid() > 0 {
+
+		logrus.Infof("start cgroup...")
+
 		cg, err := cgroups.Load(cgroups.V1, cgroups.PidPath(p.Pid()))
 		if err != nil {
 			logrus.WithError(err).Errorf("loading cgroup for %d", p.Pid())
 		}
 		c.cgroup = cg
 	}
-	logrus.Info("returning process", p)
 	return p, nil
 }
 
@@ -422,6 +528,10 @@ type process struct {
 	args   []string
 
 	waitError error
+
+	isPause bool
+	isKilled bool
+	isStarted bool
 }
 
 func (p *process) ID() string {
@@ -435,6 +545,11 @@ func (p *process) Pid() int {
 func (p *process) ExitStatus() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
+	if p.isKilled {
+		return 9
+	}
+
 	return p.exitStatus
 }
 
@@ -459,11 +574,16 @@ func (p *process) Status(context.Context) (string, error) {
 	case <-p.exited:
 	default:
 		p.mu.Lock()
-		running := p.process != nil
-		p.mu.Unlock()
-		if running {
+		defer p.mu.Unlock()
+		//running := p.process != nil || (p.isEmptyProcess && !p.isKilled)
+		//running := !p.isKilled
+		if p.isKilled {
+			return "stopped", nil
+		}
+		if p.isStarted {
 			return "running", nil
 		}
+
 		return "created", nil
 	}
 
@@ -479,118 +599,148 @@ func (p *process) Resize(ws console.WinSize) error {
 }
 
 func (p *process) Start(context.Context) (err error) {
-	var cmd *exec.Cmd
+	logrus.Infof("Start process, p: %v", p)
 
-	if len(p.args) > 0 && p.args[0] == "/pause" {
-		// Hack for /pause
-		logrus.Info("exec pause")
-		cmd = exec.Command("./pause")
-	} else {
-		var args []string
-		args = append(args, "run", "--dir=.")
+	p.isStarted = true
 
-		// for _, rm := range p.remaps {
-		// 	args = append(args, "--mapdir="+rm)
-		// }
-
-		for _, env := range p.env {
-			// Ignore the PATH env
-			if !strings.HasPrefix(env, "PATH=") {
-				args = append(args, "--env="+env)
-			}
-		}
-		args = append(args, p.args...)
-		logrus.Infof("exec wasmer %s", strings.Join(args, " "))
-		cmd = exec.Command("wasmer", args...)
+	if p.isPause {
+		//cmd := exec.Command("./pause")
+		//cmd.Dir = p.rootfs
+		//cmd.Start()
+		return nil
 	}
 
-	cmd.Dir = p.rootfs
-
-	var in io.Closer
-	var closers []io.Closer
-	if p.stdio.Stdin != "" {
-		stdin, err := os.OpenFile(p.stdio.Stdin, os.O_RDONLY, 0)
-		if err != nil {
-			return errors.Wrapf(err, "unable to open stdin: %s", p.stdio.Stdin)
+	//if p.isEmptyProcess {
+		cmd := exec.Command("cp", p.rootfs + "/" + p.args[0], "/home/docker/" + p.args[0])
+		logrus.Infof("cmd: %s", cmd.String())
+		e := cmd.Start()
+		if e != nil {
+			logrus.Error("isEmptyProcess cmd error", e)
 		}
-		defer func() {
-			if err != nil {
-				stdin.Close()
-			}
-		}()
-		cmd.Stdin = stdin
-		in = stdin
-		closers = append(closers, stdin)
-	}
+		return nil
+	//}
 
-	if p.stdio.Stdout != "" {
-		stdout, err := os.OpenFile(p.stdio.Stdout, os.O_WRONLY, 0)
-		if err != nil {
-			return errors.Wrapf(err, "unable to open stdout: %s", p.stdio.Stdout)
-		}
-		defer func() {
-			if err != nil {
-				stdout.Close()
-			}
-		}()
-		cmd.Stdout = stdout
-		closers = append(closers, stdout)
-	}
+	//var cmd *exec.Cmd
+	//if len(p.args) > 0 && p.args[0] == "/pause" {
+	//	// Hack for /pause
+	//	logrus.Info("exec pause")
+	//	cmd = exec.Command("./pause")
+	//
+	//	cmd.Dir = p.rootfs
+	//
+	//	var in io.Closer
+	//	var closers []io.Closer
+	//	if p.stdio.Stdin != "" {
+	//		stdin, err := os.OpenFile(p.stdio.Stdin, os.O_RDONLY, 0)
+	//		if err != nil {
+	//			return errors.Wrapf(err, "unable to open stdin: %s", p.stdio.Stdin)
+	//		}
+	//		defer func() {
+	//			if err != nil {
+	//				stdin.Close()
+	//			}
+	//		}()
+	//		cmd.Stdin = stdin
+	//		in = stdin
+	//		closers = append(closers, stdin)
+	//	}
+	//
+	//	if p.stdio.Stdout != "" {
+	//		stdout, err := os.OpenFile(p.stdio.Stdout, os.O_WRONLY, 0)
+	//		if err != nil {
+	//			return errors.Wrapf(err, "unable to open stdout: %s", p.stdio.Stdout)
+	//		}
+	//		defer func() {
+	//			if err != nil {
+	//				stdout.Close()
+	//			}
+	//		}()
+	//		cmd.Stdout = stdout
+	//		closers = append(closers, stdout)
+	//	}
+	//
+	//	if p.stdio.Stderr != "" {
+	//		stderr, err := os.OpenFile(p.stdio.Stderr, os.O_WRONLY, 0)
+	//		if err != nil {
+	//			return errors.Wrapf(err, "unable to open stderr: %s", p.stdio.Stderr)
+	//		}
+	//		defer func() {
+	//			if err != nil {
+	//				stderr.Close()
+	//			}
+	//		}()
+	//		cmd.Stderr = stderr
+	//		closers = append(closers, stderr)
+	//	}
+	//
+	//	p.mu.Lock()
+	//	defer p.mu.Unlock()
+	//	if p.process != nil {
+	//		return errors.Wrap(errdefs.ErrFailedPrecondition, "already running")
+	//	}
+	//	if err := cmd.Start(); err != nil {
+	//		p.mu.Unlock()
+	//		return err
+	//	}
+	//
+	//	p.process = cmd.Process
+	//	p.pid = cmd.Process.Pid
+	//	p.stdin = in
+	//
+	//
+	//	go func() {
+	//		waitStatus, err := p.process.Wait()
+	//		p.mu.Lock()
+	//		p.exitTime = time.Now()
+	//		if err != nil {
+	//			p.exitStatus = -1
+	//			logrus.WithError(err).Errorf("wait returned error")
+	//		} else if waitStatus != nil {
+	//			// TODO: Make this cross platform
+	//			p.exitStatus = int(waitStatus.Sys().(syscall.WaitStatus))
+	//		}
+	//		p.process = nil
+	//		p.mu.Unlock()
+	//
+	//		close(p.exited)
+	//
+	//		p.ec <- Exit{
+	//			Pid:    p.pid,
+	//			Status: p.exitStatus,
+	//		}
+	//
+	//		for _, c := range closers {
+	//			c.Close()
+	//		}
+	//	}()
+	//
+	//} else {
+	//	var args []string
+	//	args = append(args, "run", "--dir=.")
+	//
+	//	// for _, rm := range p.remaps {
+	//	// 	args = append(args, "--mapdir="+rm)
+	//	// }
+	//
+	//	for _, env := range p.env {
+	//		// Ignore the PATH env
+	//		if !strings.HasPrefix(env, "PATH=") {
+	//			args = append(args, "--env="+env)
+	//		}
+	//	}
+	//	args = append(args, p.args...)
+	//	//logrus.Infof("process Start args: %s", strings.Join(p.args, ","))
+	//	//logrus.Infof("process Start args: %s", strings.Join(args, ","))
+	////	cmd = exec.Command("wasmer", args...)
+	//	cmd = exec.Command("cp", p.rootfs + "/" + p.args[0], "/home/docker/" + p.args[0])
+	//	logrus.Infof("cmd: %s", cmd.String())
+	//	err := cmd.Start()
+	//	if err != nil {
+	//		logrus.Error("new process cmd error", err)
+	//	}
+	//}
 
-	if p.stdio.Stderr != "" {
-		stderr, err := os.OpenFile(p.stdio.Stderr, os.O_WRONLY, 0)
-		if err != nil {
-			return errors.Wrapf(err, "unable to open stderr: %s", p.stdio.Stderr)
-		}
-		defer func() {
-			if err != nil {
-				stderr.Close()
-			}
-		}()
-		cmd.Stderr = stderr
-		closers = append(closers, stderr)
-	}
-
-	p.mu.Lock()
-	if p.process != nil {
-		return errors.Wrap(errdefs.ErrFailedPrecondition, "already running")
-	}
-	if err := cmd.Start(); err != nil {
-		p.mu.Unlock()
-		return err
-	}
-	p.process = cmd.Process
-	p.pid = cmd.Process.Pid
-	p.stdin = in
-	p.mu.Unlock()
-
-	go func() {
-		waitStatus, err := p.process.Wait()
-		p.mu.Lock()
-		p.exitTime = time.Now()
-		if err != nil {
-			p.exitStatus = -1
-			logrus.WithError(err).Errorf("wait returned error")
-		} else if waitStatus != nil {
-			// TODO: Make this cross platform
-			p.exitStatus = int(waitStatus.Sys().(syscall.WaitStatus))
-		}
-		p.process = nil
-		p.mu.Unlock()
-
-		close(p.exited)
-
-		p.ec <- Exit{
-			Pid:    p.pid,
-			Status: p.exitStatus,
-		}
-
-		for _, c := range closers {
-			c.Close()
-		}
-	}()
-
-	return nil
+	//return nil
 }
 
 func (p *process) Delete(context.Context) error {
@@ -599,16 +749,34 @@ func (p *process) Delete(context.Context) error {
 
 func (p *process) Kill(context.Context, uint32, bool) error {
 	p.mu.Lock()
-	running := p.process != nil
-	p.mu.Unlock()
+	defer p.mu.Unlock()
+	//TODO 调用卸载Function的接口
 
-	if !running {
-		// return errors.New("not started")
-		// Ignore the kill signal
-		return nil
-	}
+	p.isKilled = true
+	p.exitTime = time.Now()
 
-	return p.process.Kill()
+
+	//p.ec <- Exit{
+	//	Pid:    p.pid,
+	//	Status: 9,
+	//}
+
+	close(p.exited)
+
+	return nil
+
+	//p.mu.Lock()
+	//running := p.process != nil
+	//p.mu.Unlock()
+	//
+	//if !running {
+	//	// return errors.New("not started")
+	//	// Ignore the kill signal
+	//	logrus.Info("Ignore the kill signal")
+	//	return nil
+	//}
+	//
+	//return p.process.Kill()
 }
 
 func (p *process) SetExited(status int) {
