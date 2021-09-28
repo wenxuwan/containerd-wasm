@@ -18,9 +18,22 @@ package main
 
 import (
 	"github.com/containerd/containerd/runtime/v2/shim"
-	wasm "github.com/dmcgowan/containerd-wasm"
+	wasm "github.com/denverdino/containerd-wasm"
+	"net"
+	"os/exec"
 )
 
 func main() {
-	shim.Run("io.containerd.wasm.v1", wasm.New)
+	startLayotto()
+	shim.Run("io.containerd.layotto.v2", wasm.New)
+}
+
+func startLayotto() {
+	conn, err := net.Dial("tcp", "localhost:2045")
+	if err == nil {
+		conn.Close()
+		return
+	}
+	cmd := exec.Command("layotto", "start", "-c", "/home/docker/config.json")
+	cmd.Start()
 }

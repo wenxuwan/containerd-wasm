@@ -38,7 +38,7 @@ import (
 	"github.com/containerd/containerd/runtime/v2/shim"
 	taskAPI "github.com/containerd/containerd/runtime/v2/task"
 	"github.com/containerd/typeurl"
-	"github.com/dmcgowan/containerd-wasm/wasmtime"
+	"github.com/denverdino/containerd-wasm/wasmtime"
 	ptypes "github.com/gogo/protobuf/types"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
@@ -124,6 +124,9 @@ func newCommand(ctx context.Context, id, containerdBinary, containerdAddress str
 		"-id", id,
 		"-address", containerdAddress,
 	}
+
+	//logrus.Infof("newCommand, self: %s, cwd: %s, args: %v", self, cwd, args)
+
 	cmd := exec.Command(self, args...)
 	cmd.Dir = cwd
 	cmd.Env = append(os.Environ(), "GOMAXPROCS=4")
@@ -205,6 +208,7 @@ func (s *service) StartShim(ctx context.Context, id, containerdBinary, container
 }
 
 func (s *service) Cleanup(ctx context.Context) (*taskAPI.DeleteResponse, error) {
+	logrus.Infof("service Cleanup")
 	cwd, err := os.Getwd()
 	if err != nil {
 		return nil, err
@@ -241,7 +245,9 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	logrus.Infof("creating %s", r.ID)
+	a, _ := json.Marshal(r)
+
+	logrus.Infof("service Create %s", string(a))
 
 	container, err := wasmtime.NewContainer(ctx, s.platform, r, s.ec)
 	if err != nil {
@@ -264,6 +270,8 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		Pid:        uint32(container.Pid()),
 	})
 
+	//logrus.Infof("service Create pid: %d", container.Pid())
+
 	return &taskAPI.CreateTaskResponse{
 		Pid: uint32(container.Pid()),
 	}, nil
@@ -271,7 +279,8 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 
 // Start a process
 func (s *service) Start(ctx context.Context, r *taskAPI.StartRequest) (*taskAPI.StartResponse, error) {
-	logrus.Infof("starting %s", r.ID)
+	a, _ := json.Marshal(r)
+	logrus.Infof("service Start %s", string(a))
 	container, err := s.getContainer(r.ID)
 	if err != nil {
 		return nil, err
@@ -308,6 +317,7 @@ func (s *service) Start(ctx context.Context, r *taskAPI.StartRequest) (*taskAPI.
 
 // Delete the initial process and container
 func (s *service) Delete(ctx context.Context, r *taskAPI.DeleteRequest) (*taskAPI.DeleteResponse, error) {
+	logrus.Infof("service Delete %s", r.String())
 	container, err := s.getContainer(r.ID)
 	if err != nil {
 		return nil, err
@@ -319,11 +329,12 @@ func (s *service) Delete(ctx context.Context, r *taskAPI.DeleteRequest) (*taskAP
 	// if we deleted our init task, close the platform and send the task delete event
 	if r.ExecID == "" {
 		s.mu.Lock()
-		logrus.WithField("id", r.ID).Info("deleting container")
+		//logrus.WithField("id", r.ID).Info("deleting container")
 		delete(s.containers, r.ID)
 		hasContainers := len(s.containers) > 0
 		s.mu.Unlock()
 		if s.platform != nil && !hasContainers {
+			logrus.Infof("Delete platform close")
 			s.platform.Close()
 		}
 		s.send(&eventstypes.TaskDelete{
@@ -342,6 +353,7 @@ func (s *service) Delete(ctx context.Context, r *taskAPI.DeleteRequest) (*taskAP
 
 // Exec an additional process inside the container
 func (s *service) Exec(ctx context.Context, r *taskAPI.ExecProcessRequest) (*ptypes.Empty, error) {
+	logrus.Infof("service Exec: %s", r.String())
 	container, err := s.getContainer(r.ID)
 	if err != nil {
 		return nil, err
@@ -375,6 +387,8 @@ func (s *service) ResizePty(ctx context.Context, r *taskAPI.ResizePtyRequest) (*
 
 // State returns runtime state information for a process
 func (s *service) State(ctx context.Context, r *taskAPI.StateRequest) (*taskAPI.StateResponse, error) {
+
+
 	container, err := s.getContainer(r.ID)
 	if err != nil {
 		return nil, err
@@ -387,6 +401,9 @@ func (s *service) State(ctx context.Context, r *taskAPI.StateRequest) (*taskAPI.
 	if err != nil {
 		return nil, err
 	}
+
+	logrus.Infof("service State, req: %s, status: %s", r.String(), st)
+
 	status := task.StatusUnknown
 	switch st {
 	case "created":
@@ -417,6 +434,7 @@ func (s *service) State(ctx context.Context, r *taskAPI.StateRequest) (*taskAPI.
 
 // Pause the container
 func (s *service) Pause(ctx context.Context, r *taskAPI.PauseRequest) (*ptypes.Empty, error) {
+	logrus.Infof("service Pause: %s", r.String())
 	container, err := s.getContainer(r.ID)
 	if err != nil {
 		return nil, err
@@ -432,6 +450,7 @@ func (s *service) Pause(ctx context.Context, r *taskAPI.PauseRequest) (*ptypes.E
 
 // Resume the container
 func (s *service) Resume(ctx context.Context, r *taskAPI.ResumeRequest) (*ptypes.Empty, error) {
+	logrus.Infof("service Resume: %s", r.String())
 	container, err := s.getContainer(r.ID)
 	if err != nil {
 		return nil, err
@@ -447,6 +466,7 @@ func (s *service) Resume(ctx context.Context, r *taskAPI.ResumeRequest) (*ptypes
 
 // Kill a process with the provided signal
 func (s *service) Kill(ctx context.Context, r *taskAPI.KillRequest) (*ptypes.Empty, error) {
+	logrus.Infof("service Kill: %s", r.String())
 	container, err := s.getContainer(r.ID)
 	if err != nil {
 		return nil, err
@@ -454,11 +474,13 @@ func (s *service) Kill(ctx context.Context, r *taskAPI.KillRequest) (*ptypes.Emp
 	if err := container.Kill(ctx, r); err != nil {
 		return nil, errdefs.ToGRPC(err)
 	}
+	//logrus.Info("service Kill success")
 	return empty, nil
 }
 
 // Pids returns all pids inside the container
 func (s *service) Pids(ctx context.Context, r *taskAPI.PidsRequest) (*taskAPI.PidsResponse, error) {
+	logrus.Infof("service Pids: %s", r.String())
 	container, err := s.getContainer(r.ID)
 	if err != nil {
 		return nil, err
@@ -530,6 +552,7 @@ func (s *service) Update(ctx context.Context, r *taskAPI.UpdateTaskRequest) (*pt
 
 // Wait for a process to exit
 func (s *service) Wait(ctx context.Context, r *taskAPI.WaitRequest) (*taskAPI.WaitResponse, error) {
+	logrus.Infof("service wait, r:%v", r)
 	container, err := s.getContainer(r.ID)
 	if err != nil {
 		return nil, err
@@ -571,15 +594,18 @@ func (s *service) Shutdown(ctx context.Context, r *taskAPI.ShutdownRequest) (*pt
 }
 
 func (s *service) Stats(ctx context.Context, r *taskAPI.StatsRequest) (*taskAPI.StatsResponse, error) {
+	//logrus.Infof("service Stats: %s", r.String())
 	container, err := s.getContainer(r.ID)
 	if err != nil {
 		return nil, err
 	}
 	cg := container.Cgroup()
 	if cg == nil {
+		logrus.Infof("Stats cg == nil")
 		return nil, errdefs.ToGRPCf(errdefs.ErrNotFound, "cgroup does not exist")
 	}
 	stats, err := cg.Stat(cgroups.IgnoreNotExist)
+	//logrus.Infof("service Stats: %v", stats)
 	if err != nil {
 		return nil, err
 	}
