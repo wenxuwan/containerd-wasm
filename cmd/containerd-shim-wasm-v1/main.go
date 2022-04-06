@@ -17,10 +17,11 @@ package main
 */
 
 import (
-	"github.com/containerd/containerd/runtime/v2/shim"
-	wasm "github.com/denverdino/containerd-wasm"
 	"net"
 	"os/exec"
+	wasm "wenxuwan/containerd-wasm"
+
+	"github.com/containerd/containerd/runtime/v2/shim"
 )
 
 func main() {
