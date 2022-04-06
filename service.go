@@ -27,7 +27,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/wenxuwan/containerd-wasm/wasmtime"
+	"wenxuwan/containerd-wasm/wasmtime"
 
 	"github.com/containerd/cgroups"
 	rproc "github.com/containerd/containerd/"
